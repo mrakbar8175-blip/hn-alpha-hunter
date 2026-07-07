@@ -1,0 +1,42 @@
+name: Daily AI Tool Hunter
+
+on:
+  schedule:
+    - cron: '0 12 * * *'   # runs daily at 12:00 UTC
+  workflow_dispatch:        # lets you run manually
+
+jobs:
+  hunt:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies
+        run: pip install requests
+
+      # 👇 RESTORE the previously saved IDs
+      - name: Download sent IDs from previous run
+        uses: actions/download-artifact@v4
+        with:
+          name: sent-tool-ids      # must match the upload name exactly
+          path: .                  # save to current directory (so script can find sent_tools.json)
+        continue-on-error: true    # don't fail if this is the very first run
+
+      - name: Run AI Tool Hunter
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: python ai_tool_hunter.py
+
+      # 👇 SAVE the updated IDs for the next run
+      - name: Upload updated sent IDs
+        uses: actions/upload-artifact@v4
+        with:
+          name: sent-tool-ids      # same name as download
+          path: sent_tools.json    # the file our script creates
