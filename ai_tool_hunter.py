@@ -12,7 +12,7 @@ SENT_IDS_FILE = Path("sent_tools.json")
 KEYWORDS = ["ai", "gpt", "saas", "tool", "show hn", "startup", "agent", "automation"]
 COMPILED_KEYWORDS = [re.compile(r'\b' + re.escape(kw) + r'\b', re.IGNORECASE) for kw in KEYWORDS]
 
-TOP_STORIES_LIMIT = 30
+TOP_STORIES_LIMIT = 500
 
 
 def load_sent_ids():
