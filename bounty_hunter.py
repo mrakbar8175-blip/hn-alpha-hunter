@@ -1,23 +1,40 @@
 import requests
 import os
 import re
+import json
 
 # --- CONFIGURATION ---
 DISCORD_WEBHOOK_URL = os.getenv("BOUNTY_HUNTER_WEBHOOK", "PASTE_YOUR_BOUNTY_WEBHOOK_HERE")
+STATE_FILE = "sent_bounties.json"
+
+def load_sent_bounties():
+    """Loads the memory file to see what we already posted."""
+    if os.path.exists(STATE_FILE):
+        try:
+            with open(STATE_FILE, 'r') as f:
+                return set(json.load(f))
+        except:
+            return set()
+    return set()
+
+def save_sent_bounties(sent_set):
+    """Saves the memory file. Keeps only the last 200 so it doesn't get too huge."""
+    recent_urls = list(sent_set)[-200:]
+    with open(STATE_FILE, 'w') as f:
+        json.dump(recent_urls, f)
 
 def get_github_bounties():
     print("💰 Hunting for open GitHub bounties...")
     
-    # We use GitHub's public search API to find open issues with 'bounty' or 'reward' labels
     url = "https://api.github.com/search/issues"
+    # FIXED: Changed 'state:open' to 'is:open' and searched the title directly!
     params = {
-        "q": "label:bounty OR label:reward state:open",
+        "q": "is:issue is:open bounty in:title",
         "sort": "created",
         "order": "desc",
-        "per_page": 15 # Get the 15 newest bounties
+        "per_page": 30 # Fetch a bit more to ensure we find new ones
     }
     
-    # A User-Agent is required by GitHub's API
     headers = {
         "Accept": "application/vnd.github.v3+json",
         "User-Agent": "BountyHunterBot/1.0"
@@ -34,18 +51,14 @@ def get_github_bounties():
     found_bounties = []
     
     for item in items:
-        # GitHub's search API sometimes mixes Pull Requests with Issues. We only want Issues.
         if 'pull_request' in item:
             continue
             
         title = item.get('title', '')
         html_url = item.get('html_url', '')
-        
-        # Extract the repository name from the API URL
         repo_url = item.get('repository_url', '')
         repo_name = repo_url.split('/')[-1] if repo_url else "Unknown Repo"
         
-        # Try to extract the dollar amount from the title (e.g., "$100", "$1,500")
         amount_match = re.search(r'\$[\d,]+', title)
         amount = amount_match.group(0) if amount_match else "Hidden/Contact"
         
@@ -65,7 +78,7 @@ def send_to_discord(bounties):
         
     description = "*Fresh, open bounties on GitHub. Claim them and get paid!*\n\n"
     
-    for bounty in bounties[:5]: # Send top 5 newest bounties
+    for bounty in bounties[:5]:
         description += f"💰 **[{bounty['amount']}]({bounty['url']})** - {bounty['title']}\n"
         description += f"📦 *Repo: {bounty['repo']}*\n\n"
         
@@ -76,7 +89,7 @@ def send_to_discord(bounties):
         "embeds": [{
             "title": "💸 FRESH GITHUB BOUNTIES AVAILABLE 💸",
             "description": description,
-            "color": 3066993 # A nice money green color
+            "color": 3066993
         }]
     }
     
@@ -88,5 +101,23 @@ def send_to_discord(bounties):
         print(f"❌ Failed to send to Discord: {e}")
 
 if __name__ == "__main__":
-    bounties = get_github_bounties()
-    send_to_discord(bounties)
+    # 1. Load the history of what we already sent
+    already_sent = load_sent_bounties()
+    
+    # 2. Fetch fresh bounties from GitHub
+    all_bounties = get_github_bounties()
+    
+    # 3. Filter out the ones we already sent!
+    new_bounties = [b for b in all_bounties if b['url'] not in already_sent]
+    
+    if new_bounties:
+        print(f"🎉 Found {len(new_bounties)} NEW bounties!")
+        send_to_discord(new_bounties)
+        
+        # 4. Add the new URLs to our memory and save it
+        for b in new_bounties:
+            already_sent.add(b['url'])
+        save_sent_bounties(already_sent)
+        print("💾 Saved state to prevent duplicates next time.")
+    else:
+        print("No new bounties found today (already sent the ones that are open).")
