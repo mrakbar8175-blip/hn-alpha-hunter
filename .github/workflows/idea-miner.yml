@@ -2,9 +2,8 @@ name: Daily Idea Miner
 
 on:
   schedule:
-    # Runs every day at 2:00 PM UTC (Adjust to your timezone)
-    - cron: '0 14 * * *'
-  workflow_dispatch: # Allows manual runs
+    - cron: '0 14 * * *' # Runs at 2:00 PM UTC
+  workflow_dispatch:
 
 jobs:
   mine-ideas:
@@ -24,8 +23,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install requests
 
-      - name: Run the Reddit Idea Miner
+      - name: Run the Idea Miner
         env:
-          # Notice we use a DIFFERENT secret name here
           IDEA_MINER_WEBHOOK: ${{ secrets.IDEA_MINER_WEBHOOK }}
         run: python idea_miner.py
