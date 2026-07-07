@@ -1,8 +1,16 @@
+name: Daily Idea Miner
+
+on:
+  schedule:
+    - cron: '0 10 * * *'   # Runs every day at 10:00 UTC (adjust as needed)
+  workflow_dispatch:        # Allows manual triggering
+
 jobs:
   mine:
     runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout repo
+      - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Setup Python
@@ -13,20 +21,18 @@ jobs:
       - name: Install dependencies
         run: pip install requests
 
-      # 👇 Restore the saved IDs from the previous run (if any)
-      - name: Download previous sent IDs
+      - name: Download previously sent IDs
         uses: actions/download-artifact@v4
         with:
           name: sent-ids
           path: .
-        continue-on-error: true   # first run will have no artifact
+        continue-on-error: true   # No artifact on first run
 
-      - name: Run idea miner
+      - name: Run Idea Miner
         env:
           IDEA_MINER_WEBHOOK: ${{ secrets.IDEA_MINER_WEBHOOK }}
         run: python idea_miner.py
 
-      # 👇 Save the updated file for the next run
       - name: Upload updated sent IDs
         uses: actions/upload-artifact@v4
         with:
