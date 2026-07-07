@@ -13,19 +13,16 @@ PAIN_PHRASES = [
     "recommend a", "tool for", "software for", "frustrated with", "manual"
 ]
 
-# We'll fetch a larger set to offset the "already sent" filter
-MAX_HITS = 200  # Algolia allows up to 1000
+MAX_HITS = 200
 
 
 def load_sent_ids():
-    """Load previously sent post IDs from JSON. Returns a set of strings."""
     if not SENT_IDS_FILE.exists():
         print("📁 No sent_ids file found. Starting fresh.")
         return set()
     try:
         with open(SENT_IDS_FILE, "r") as f:
             data = json.load(f)
-            # Ensure all are strings
             ids = {str(i) for i in data}
             print(f"📋 Loaded {len(ids)} previously sent IDs.")
             return ids
@@ -35,28 +32,23 @@ def load_sent_ids():
 
 
 def save_sent_ids(ids):
-    """Save the set of sent IDs to JSON."""
     try:
         with open(SENT_IDS_FILE, "w") as f:
             json.dump(list(ids), f)
         print(f"💾 Saved {len(ids)} IDs to {SENT_IDS_FILE}")
     except IOError as e:
         print(f"❌ CRITICAL: Failed to save sent IDs: {e}")
-        print("   The same posts may be sent again on the next run.")
 
 
 def get_ask_hn_ideas(sent_ids):
-    """
-    Fetch recent Ask HN posts, filter out already-sent IDs,
-    and return new pain-point ideas sorted by upvotes.
-    """
-    print(f"🕵️  Mining up to {MAX_HITS} Ask HN posts...")
+    print(f"🕵️  Mining up to {MAX_HITS} most recent Ask HN posts...")
     found_ideas = []
 
     params = {
         "query": "Ask HN",
         "tags": "ask_hn",
-        "hitsPerPage": MAX_HITS
+        "hitsPerPage": MAX_HITS,
+        "sort_by_date": "true"          # <-- fetch newest first
     }
 
     try:
@@ -69,7 +61,7 @@ def get_ask_hn_ideas(sent_ids):
         return []
 
     for post in posts:
-        post_id = str(post.get('objectID'))   # always string
+        post_id = str(post.get('objectID'))
         title = post.get('title', '')
 
         if post_id in sent_ids:
@@ -90,12 +82,10 @@ def get_ask_hn_ideas(sent_ids):
 
 
 def send_to_discord(ideas):
-    """Send up to 5 ideas to Discord. Returns set of successfully sent IDs."""
     if not ideas:
         print("No new ideas to send.")
         return set()
 
-    # Take at most 5
     to_send = ideas[:5]
     print(f"📤 Preparing to send {len(to_send)} ideas to Discord...")
 
@@ -125,22 +115,14 @@ def send_to_discord(ideas):
 
 
 if __name__ == "__main__":
-    # 1. Validate webhook
     if not DISCORD_WEBHOOK_URL or DISCORD_WEBHOOK_URL.startswith("PASTE_YOUR"):
         print("❌ Discord webhook URL not configured.")
-        print("   Set IDEA_MINER_WEBHOOK environment variable or edit the script.")
         exit(1)
 
-    # 2. Load past sent IDs
     sent_ids = load_sent_ids()
-
-    # 3. Fetch new ideas
     new_ideas = get_ask_hn_ideas(sent_ids)
-
-    # 4. Send and collect IDs of successfully sent posts
     newly_sent = send_to_discord(new_ideas)
 
-    # 5. Update persistent store ONLY if something was sent
     if newly_sent:
         sent_ids.update(newly_sent)
         save_sent_ids(sent_ids)
