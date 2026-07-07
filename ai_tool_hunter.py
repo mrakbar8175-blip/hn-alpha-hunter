@@ -7,24 +7,24 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # --- CONFIGURATION ---
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "")
-SENT_IDS_FILE = Path("sent_tools.json")   # stores story IDs already sent
+SENT_IDS_FILE = Path("sent_tools.json")
 
-# Keywords to match (word‑boundary regex)
 KEYWORDS = ["ai", "gpt", "saas", "tool", "show hn", "startup", "agent", "automation"]
 COMPILED_KEYWORDS = [re.compile(r'\b' + re.escape(kw) + r'\b', re.IGNORECASE) for kw in KEYWORDS]
 
-TOP_STORIES_LIMIT = 30  # how many top stories to scan
+TOP_STORIES_LIMIT = 30
 
 
 def load_sent_ids():
-    """Load previously sent story IDs from a JSON file."""
+    """Return set of previously sent story IDs as strings."""
     if not SENT_IDS_FILE.exists():
         print("📁 No sent_ids file found. Starting fresh.")
         return set()
     try:
         with open(SENT_IDS_FILE, "r") as f:
             data = json.load(f)
-            ids = {int(i) for i in data}   # HN IDs are integers
+            # Force all IDs to be strings
+            ids = {str(i) for i in data}
             print(f"📋 Loaded {len(ids)} previously sent IDs.")
             return ids
     except (json.JSONDecodeError, IOError) as e:
@@ -33,7 +33,7 @@ def load_sent_ids():
 
 
 def save_sent_ids(ids):
-    """Save the set of sent IDs to JSON."""
+    """Save set of string IDs to JSON."""
     try:
         with open(SENT_IDS_FILE, "w") as f:
             json.dump(list(ids), f)
@@ -44,7 +44,7 @@ def save_sent_ids(ids):
 
 
 def fetch_item(story_id):
-    """Fetch a single HN item by ID."""
+    """Fetch a single HN item."""
     try:
         item_url = f"https://hacker-news.firebaseio.com/v0/item/{story_id}.json"
         response = requests.get(item_url, timeout=5)
@@ -57,10 +57,10 @@ def fetch_item(story_id):
 
 def get_top_tech_stories(sent_ids):
     """
-    Fetch top HN stories, filter out already‑sent ones,
-    and return new AI/SaaS tool stories sorted by score.
+    Fetch top HN stories, skip already‑sent ones,
+    return new matching stories sorted by score.
     """
-    print(f"🕵️  Scanning top {TOP_STORIES_LIMIT} Hacker News stories for AI & SaaS tools...")
+    print(f"🕵️  Scanning top {TOP_STORIES_LIMIT} stories for AI & SaaS tools...")
     top_url = "https://hacker-news.firebaseio.com/v0/topstories.json"
 
     try:
@@ -73,7 +73,6 @@ def get_top_tech_stories(sent_ids):
 
     found_tools = []
 
-    # Fetch story details concurrently
     with ThreadPoolExecutor(max_workers=15) as executor:
         future_to_id = {executor.submit(fetch_item, sid): sid for sid in story_ids}
 
@@ -82,16 +81,15 @@ def get_top_tech_stories(sent_ids):
             if not item:
                 continue
 
-            story_id = item.get('id')
+            story_id = str(item.get('id'))        # always string
             title = item.get('title')
-            if not title or story_id is None:
+            if not title:
                 continue
 
-            # Skip stories already sent
             if story_id in sent_ids:
+                print(f"⏭️  Skipping already‑sent: {story_id} – {title}")
                 continue
 
-            # Check keywords via regex
             if any(pattern.search(title) for pattern in COMPILED_KEYWORDS):
                 found_tools.append({
                     'id': story_id,
@@ -105,13 +103,21 @@ def get_top_tech_stories(sent_ids):
     return found_tools
 
 
-def send_to_discord(tools):
-    """Send top 5 tools to Discord; return IDs of successfully sent stories."""
-    if not tools:
-        print("No new tools to send.")
+def send_to_discord(tools, sent_ids):
+    """
+    Send top‑5 tools to Discord, but **only** if their ID is not already sent.
+    Returns IDs of successfully sent stories.
+    """
+    # Final safety filter (just in case)
+    truly_new = [t for t in tools if t['id'] not in sent_ids]
+    if len(truly_new) < len(tools):
+        print(f"⚠️  {len(tools) - len(truly_new)} tools were already sent. Removed.")
+
+    if not truly_new:
+        print("No new tools to send (all were already sent).")
         return set()
 
-    to_send = tools[:5]
+    to_send = truly_new[:5]
     print(f"📤 Preparing to send {len(to_send)} tools to Discord...")
 
     description = "*Found on Hacker News. Get them before everyone else!*\n\n"
@@ -140,7 +146,6 @@ def send_to_discord(tools):
 
 
 if __name__ == "__main__":
-    # Validate webhook
     if not DISCORD_WEBHOOK_URL or DISCORD_WEBHOOK_URL.startswith("PASTE_YOUR"):
         print("❌ Discord webhook URL not configured.")
         print("   Set DISCORD_WEBHOOK_URL environment variable or edit the script.")
@@ -148,7 +153,9 @@ if __name__ == "__main__":
 
     sent_ids = load_sent_ids()
     new_tools = get_top_tech_stories(sent_ids)
-    newly_sent = send_to_discord(new_tools)
+
+    # Pass sent_ids to the sending function for a last‑chance dedup check
+    newly_sent = send_to_discord(new_tools, sent_ids)
 
     if newly_sent:
         sent_ids.update(newly_sent)
