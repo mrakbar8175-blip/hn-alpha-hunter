@@ -2,28 +2,28 @@ import requests
 import os
 import json
 import re
+import xml.etree.ElementTree as ET
 
 # --- CONFIGURATION ---
 DISCORD_WEBHOOK_URL = os.getenv("SIGNAL_HUNTER_WEBHOOK", "PASTE_YOUR_WEBHOOK_HERE")
 STATE_FILE = "sent_signal_seeks.json"
 
-# Subreddits where crypto traders hang out and complain
-SUBREDDITS = ['CryptoCurrency', 'Bitcoin', 'ethtrader', 'CryptoMarkets', 'altcoin', 'CryptoTrading']
+# Bitcointalk RSS Feeds (Public and Unblockable)
+# Board 5 = Speculation (Where people gamble and lose)
+# Board 6 = Altcoins (Where people get rug pulled)
+RSS_FEEDS = [
+    "https://bitcointalk.org/index.php?type=rss;action=.xml;board=5.0",
+    "https://bitcointalk.org/index.php?type=rss;action=.xml;board=6.0"
+]
 
-# Phrases that indicate someone is struggling and needs signals
-PAIN_PHRASES = [
-    "lost money", "got rekt", "liquidated", "down bad", 
-    "looking for signals", "need signals", "signal group", 
-    "recommend signal", "which signal", "signal service",
-    "bad signals", "fake signals", "scammed", "rug pull",
-    "need help trading", "how to trade", "trading help",
-    "lost all", "portfolio down", "bleeding money",
-    "stop loss", "take profit", "when to sell", "when to buy",
-    "missed the pump", "bought the top", "sold the bottom"
+# Keywords that indicate someone is in pain or needs help
+PAIN_KEYWORDS = [
+    "scam", "rug", "rugpull", "dev sold", "dumped", "fake", 
+    "honeypot", "stuck", "lost", "rekt", "help", "recovery",
+    "drained", "phishing", "hack", "stolen"
 ]
 
 def load_sent_seeks():
-    """Loads the memory file to see what we already posted."""
     if os.path.exists(STATE_FILE):
         try:
             with open(STATE_FILE, 'r') as f:
@@ -33,123 +33,107 @@ def load_sent_seeks():
     return set()
 
 def save_sent_seeks(sent_set):
-    """Saves the memory file. Keeps only the last 300."""
+    # ALWAYS save the file, even if empty, to prevent git errors
     recent_urls = list(sent_set)[-300:]
     with open(STATE_FILE, 'w') as f:
         json.dump(recent_urls, f)
 
-def scan_reddit_for_seekers():
-    print(" Hunting for crypto traders in pain...")
-    found_seeks = []
-    
-    headers = {'User-Agent': 'SignalSeekerHunter/1.0'}
-    
-    for sub in SUBREDDITS:
-        url = f"https://www.reddit.com/r/{sub}/new.json?limit=50"
-        
-        try:
-            response = requests.get(url, headers=headers, timeout=10)
-            if response.status_code == 429:
-                print(f"️ Rate limited on r/{sub}. Waiting...")
-                import time
-                time.sleep(5)
-                response = requests.get(url, headers=headers, timeout=10)
-                
-            response.raise_for_status()
-            posts = response.json()['data']['children']
-            
-            for post in posts:
-                data = post['data']
-                title = data.get('title', '').lower()
-                selftext = data.get('selftext', '').lower()
-                
-                # Skip if no text content
-                if not selftext and len(title) < 20:
-                    continue
-                
-                full_text = f"{title} {selftext}"
-                
-                # Check if post contains pain phrases
-                if any(phrase in full_text for phrase in PAIN_PHRASES):
-                    # Calculate how much they're struggling (word match count)
-                    pain_score = sum(1 for phrase in PAIN_PHRASES if phrase in full_text)
-                    
-                    # Only post if they have at least 2 pain indicators
-                    if pain_score >= 2:
-                        snippet = selftext[:200].replace('\n', ' ').strip() if selftext else title
-                        if len(selftext) > 200:
-                            snippet += "..."
-                        
-                        found_seeks.append({
-                            'title': data.get('title', ''),
-                            'url': f"https://reddit.com{data.get('permalink')}",
-                            'subreddit': sub,
-                            'snippet': snippet,
-                            'score': data.get('score', 0),
-                            'pain_score': pain_score,
-                            'created': data.get('created_utc', 0)
-                        })
-            
-            import time
-            time.sleep(2)  # Be polite to Reddit
-            
-        except Exception as e:
-            print(f"❌ Error scanning r/{sub}: {e}")
-            continue
-    
-    # Sort by pain score (most desperate first) and recency
-    found_seeks.sort(key=lambda x: (x['pain_score'], -x['created']), reverse=True)
-    return found_seeks[:10]  # Return top 10 most promising leads
+def clean_html(raw_html):
+    """Removes HTML tags from the RSS description."""
+    cleanr = re.compile('<.*?>')
+    cleantext = re.sub(cleanr, '', raw_html)
+    return cleantext
 
-def send_to_discord(seeks):
-    if not seeks:
-        print("No new signal seekers found.")
+def scan_bitcointalk():
+    print("🕵️‍♂️ Scanning Bitcointalk for traders in pain...")
+    found_leads = []
+    
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) SignalHunter/1.0'}
+    
+    for feed_url in RSS_FEEDS:
+        try:
+            response = requests.get(feed_url, headers=headers, timeout=15)
+            response.raise_for_status()
+            
+            # Parse the XML RSS feed
+            root = ET.fromstring(response.content)
+            items = root.findall('.//item')
+            
+            for item in items:
+                title = item.find('title').text if item.find('title') is not None else ""
+                link = item.find('link').text if item.find('link') is not None else ""
+                desc_raw = item.find('description').text if item.find('description') is not None else ""
+                
+                # Clean the description text
+                desc = clean_html(desc_raw).lower()
+                title_lower = title.lower()
+                full_text = f"{title_lower} {desc}"
+                
+                # Check for pain keywords
+                matches = [kw for kw in PAIN_KEYWORDS if kw in full_text]
+                
+                if len(matches) >= 1:
+                    snippet = desc[:150].strip()
+                    if len(desc) > 150:
+                        snippet += "..."
+                        
+                    found_leads.append({
+                        'title': title,
+                        'url': link,
+                        'snippet': snippet,
+                        'pain_score': len(matches),
+                        'matches': ", ".join(matches)
+                    })
+                    
+        except Exception as e:
+            print(f"⚠️ Error scanning feed {feed_url}: {e}")
+            continue
+            
+    # Sort by pain score (most desperate first)
+    found_leads.sort(key=lambda x: x['pain_score'], reverse=True)
+    return found_leads
+
+def send_to_discord(leads):
+    if not leads:
+        print("No new leads found this cycle.")
         return
+        
+    description = "*Crypto traders in distress from Bitcointalk. High-intent leads for your signals.*\n\n"
     
-    description = "*People actively looking for help with crypto trading. Perfect leads for your signals!*\n\n"
-    
-    for seek in seeks[:5]:  # Send top 5
-        description += f" **[{seek['title']}]({seek['url']})**\n"
-        description += f"📍 *r/{seek['subreddit']}* | Pain Level: {'🔴' * seek['pain_score']} ({seek['pain_score']}/10)\n"
-        description += f"> {seek['snippet']}\n\n"
-    
-    description += "💡 *Action: Reply with value first, then mention your Signal server!*"
+    for lead in leads[:5]:
+        description += f"🚨 **[{lead['title']}]({lead['url']})**\n"
+        description += f"📉 *Pain Score: {lead['pain_score']}* | Keywords: `{lead['matches']}`\n"
+        description += f"> {lead['snippet']}\n\n"
+        
+    description += "💡 *Strategy: Reply with empathy and a free tip, then drop your server link.*"
     
     payload = {
         "username": "Signal Seeker Hunter",
         "embeds": [{
             "title": "🔥 CRYPTO TRADERS IN PAIN - HOT LEADS 🔥",
             "description": description,
-            "color": 15105570  # Orange
+            "color": 15105570
         }]
     }
     
     try:
         response = requests.post(DISCORD_WEBHOOK_URL, json=payload, timeout=10)
         response.raise_for_status()
-        print("✅ Signal seekers sent to Discord!")
+        print("✅ Leads sent to Discord!")
     except Exception as e:
-        print(f" Failed to send to Discord: {e}")
+        print(f"❌ Failed to send to Discord: {e}")
 
 if __name__ == "__main__":
-    # 1. Load history
     already_sent = load_sent_seeks()
+    all_leads = scan_bitcointalk()
+    new_leads = [l for l in all_leads if l['url'] not in already_sent]
     
-    # 2. Find new seekers
-    all_seeks = scan_reddit_for_seekers()
+    if new_leads:
+        print(f"🎉 Found {len(new_leads)} NEW leads!")
+        send_to_discord(new_leads)
+        for l in new_leads:
+            already_sent.add(l['url'])
     
-    # 3. Filter duplicates
-    new_seeks = [s for s in all_seeks if s['url'] not in already_sent]
-    
-    if new_seeks:
-        print(f"🎉 Found {len(new_seeks)} NEW signal seekers!")
-        send_to_discord(new_seeks)
-        
-        # 4. Save to memory
-        for s in new_seeks:
-            already_sent.add(s['url'])
-    
-    # 👇 ALWAYS save the state file, even if no new seekers found
+    # ALWAYS save state to prevent the "file not found" git error
     save_sent_seeks(already_sent)
-    print("💾 Saved state.")
-        print("No new seekers found (already tracking recent posts).")
+    print("💾 State saved.")
