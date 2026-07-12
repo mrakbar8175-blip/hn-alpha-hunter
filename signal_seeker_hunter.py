@@ -2,26 +2,15 @@ import requests
 import os
 import json
 import re
-import xml.etree.ElementTree as ET
 
 # --- CONFIGURATION ---
 DISCORD_WEBHOOK_URL = os.getenv("SIGNAL_HUNTER_WEBHOOK", "PASTE_YOUR_WEBHOOK_HERE")
 STATE_FILE = "sent_signal_seeks.json"
 
-# Crypto News RSS Feeds (100% public and unblockable)
-RSS_FEEDS = [
-    "https://cointelegraph.com/rss",
-    "https://www.coindesk.com/arc/outboundfeeds/rss/",
-    "https://decrypt.co/feed"
-]
-
-# Keywords that indicate market pain, losses, or scams
-PAIN_KEYWORDS = [
-    "scam", "rug pull", "rugpull", "dumped", "crash", "plunge",
-    "hack", "hacked", "exploit", "stolen", "lost", "fraud",
-    "liquidated", "bankrupt", "collapse", "ponzi", "exit scam",
-    "down 50%", "down 80%", "down 90%", "rekt", "bear market",
-    "sell-off", "selloff", "bloodbath", "capitulation"
+# We search Hacker News for crypto pain points (unblockable and free)
+SEARCH_QUERIES = [
+    "crypto lost", "got rekt", "liquidated", "signal group", 
+    "crypto scam", "trading bot", "lost my bitcoin", "futures"
 ]
 
 def load_sent_seeks():
@@ -34,84 +23,81 @@ def load_sent_seeks():
     return set()
 
 def save_sent_seeks(sent_set):
-    # ALWAYS save the file, even if empty
-    recent_urls = list(sent_set)[-300:]
+    recent_urls = list(sent_set)[-500:]
     with open(STATE_FILE, 'w') as f:
         json.dump(recent_urls, f)
 
-def clean_html(raw_html):
-    """Removes HTML tags from RSS content."""
-    cleanr = re.compile('<.*?>')
-    cleantext = re.sub(cleanr, '', raw_html)
-    return cleantext
-
-def scan_crypto_news():
-    print("🕵️‍♂️ Scanning crypto news for market pain and opportunities...")
-    found_leads = []
+def scan_for_seekers():
+    print("🕵️‍♂️ Hunting for crypto traders in pain (via Hacker News)...")
+    found_seeks = []
     
-    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) SignalHunter/1.0'}
+    # Algolia's search_by_date gets the freshest complaints
+    base_url = "https://hn.algolia.com/api/v1/search_by_date"
     
-    for feed_url in RSS_FEEDS:
+    for query in SEARCH_QUERIES:
+        params = {
+            "query": query,
+            "tags": "(story,ask_hn) OR comment", 
+            "hitsPerPage": 10
+        }
+        
         try:
-            response = requests.get(feed_url, headers=headers, timeout=15)
+            response = requests.get(base_url, params=params, timeout=10)
             response.raise_for_status()
+            hits = response.json().get('hits', [])
             
-            # Parse the XML RSS feed
-            root = ET.fromstring(response.content)
-            items = root.findall('.//item')
-            
-            for item in items[:30]:  # Check last 30 articles per feed
-                title = item.find('title').text if item.find('title') is not None else ""
-                link = item.find('link').text if item.find('link') is not None else ""
-                desc_raw = item.find('description').text if item.find('description') is not None else ""
+            for hit in hits:
+                item_id = hit.get('objectID')
                 
-                # Clean the description text
-                desc = clean_html(desc_raw).lower()
-                title_lower = title.lower()
-                full_text = f"{title_lower} {desc}"
-                
-                # Check for pain keywords
-                matches = [kw for kw in PAIN_KEYWORDS if kw in full_text]
-                
-                if len(matches) >= 1:
-                    snippet = desc[:200].strip()
-                    if len(desc) > 200:
-                        snippet += "..."
-                        
-                    found_leads.append({
-                        'title': title,
-                        'url': link,
-                        'snippet': snippet,
-                        'pain_score': len(matches),
-                        'matches': ", ".join(matches[:3])  # Show top 3 matches
-                    })
+                # Get the correct URL (Article link or HN discussion link)
+                if hit.get('url'):
+                    item_url = hit['url']
+                else:
+                    item_url = f"https://news.ycombinator.com/item?id={item_id}"
                     
+                # Get the text (comment or title)
+                text_content = hit.get('comment_text') or hit.get('story_title') or hit.get('title', '')
+                
+                # Clean up the HTML tags that Algolia returns
+                text_content = re.sub(r'<[^>]+>', '', text_content).replace('&amp;', '&').replace('&quot;', '"').replace('&#x27;', "'").strip()
+                
+                snippet = text_content[:200] + ("..." if len(text_content) > 200 else "")
+                
+                found_seeks.append({
+                    'title': hit.get('story_title') or hit.get('title') or "Crypto Discussion",
+                    'url': item_url,
+                    'snippet': snippet,
+                })
+                
         except Exception as e:
-            print(f"⚠️ Error scanning feed {feed_url}: {e}")
+            print(f"❌ Error searching for '{query}': {e}")
             continue
             
-    # Sort by pain score (most dramatic events first)
-    found_leads.sort(key=lambda x: x['pain_score'], reverse=True)
-    return found_leads
+    # Remove duplicates based on URL
+    unique_seeks = {}
+    for seek in found_seeks:
+        if seek['url'] not in unique_seeks:
+            unique_seeks[seek['url']] = seek
+            
+    return list(unique_seeks.values())
 
-def send_to_discord(leads):
-    if not leads:
-        print("No market pain detected this cycle.")
+def send_to_discord(seeks):
+    if not seeks:
+        print("No new signal seekers found.")
         return
-        
-    description = "*Market pain = Opportunity. People are losing money and looking for help.*\n\n"
     
-    for lead in leads[:5]:
-        description += f"🚨 **[{lead['title']}]({lead['url']})**\n"
-        description += f"📉 *Pain Score: {lead['pain_score']}* | Keywords: `{lead['matches']}`\n"
-        description += f"> {lead['snippet']}\n\n"
-        
-    description += "💡 *Strategy: Share these news events in your server. When people panic, offer your signals as the solution.*"
+    description = "*People talking about crypto struggles. Perfect leads for your signals!*\n\n"
+    
+    for seek in seeks[:5]:
+        description += f"🚨 **[{seek['title']}]({seek['url']})**\n"
+        description += f"> {seek['snippet']}\n\n"
+    
+    description += "💡 *Action: Reply with value, or if it's an article, comment on the forum!*"
     
     payload = {
         "username": "Signal Seeker Hunter",
         "embeds": [{
-            "title": "🔥 CRYPTO MARKET PAIN DETECTED 🔥",
+            "title": "🔥 CRYPTO TRADERS IN PAIN - HOT LEADS 🔥",
             "description": description,
             "color": 15105570
         }]
@@ -120,21 +106,21 @@ def send_to_discord(leads):
     try:
         response = requests.post(DISCORD_WEBHOOK_URL, json=payload, timeout=10)
         response.raise_for_status()
-        print("✅ Market pain alerts sent to Discord!")
+        print("✅ Signal seekers sent to Discord!")
     except Exception as e:
         print(f"❌ Failed to send to Discord: {e}")
 
 if __name__ == "__main__":
     already_sent = load_sent_seeks()
-    all_leads = scan_crypto_news()
-    new_leads = [l for l in all_leads if l['url'] not in already_sent]
+    all_seeks = scan_for_seekers()
+    new_seeks = [s for s in all_seeks if s['url'] not in already_sent]
     
-    if new_leads:
-        print(f"🎉 Found {len(new_leads)} NEW market pain events!")
-        send_to_discord(new_leads)
-        for l in new_leads:
-            already_sent.add(l['url'])
-    
-    # ALWAYS save state
+    if new_seeks:
+        print(f"🎉 Found {len(new_seeks)} NEW signal seekers!")
+        send_to_discord(new_seeks)
+        for s in new_seeks:
+            already_sent.add(s['url'])
+            
+    # 👇 ALWAYS save the state file so GitHub Actions doesn't crash!
     save_sent_seeks(already_sent)
-    print("💾 State saved.")
+    print("💾 Saved state.")
