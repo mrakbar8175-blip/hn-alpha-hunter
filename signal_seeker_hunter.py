@@ -6,13 +6,13 @@ import re
 DISCORD_WEBHOOK_URL = os.getenv("SIGNAL_HUNTER_WEBHOOK", "PASTE_YOUR_WEBHOOK_HERE")
 STATE_FILE = "sent_signal_seeks.json"
 
+# More keywords, more common phrases
 PAIN_KEYWORDS = [
-    "lost money", "lost all", "got rekt", "rekt", "liquidated",
-    "need help", "help me", "struggling", "losing money", "down bad",
-    "scammed", "rug pull", "fake signals", "bad signals", "lost everything",
-    "broke", "don't know what to do", "confused", "selling everything",
-    "giving up", "quit trading", "worst trade", "huge loss", "fuck me",
-    "fuck this", "done trading", "never again"
+    "lost", "rekt", "liquidated", "help", "struggling", "losing", 
+    "scam", "rug", "fake", "broke", "confused", "giving up", 
+    "quit", "worst", "huge loss", "fuck", "done", "never",
+    "dumped", "crashed", "down", "bleeding", "stuck", "trapped",
+    "panic", "sell", "selling", "afraid", "scared", "worried"
 ]
 
 def load_sent_seeks():
@@ -40,53 +40,76 @@ def scan_4chan_biz():
         response.raise_for_status()
         threads_data = response.json()
         
-        for page in threads_data[:2]:
-            for thread in page.get('threads', [])[:10]:
+        print(f"📊 Found {len(threads_data)} pages of threads")
+        
+        # Scan first 3 pages (more threads)
+        for page in threads_data[:3]:
+            threads = page.get('threads', [])
+            print(f"📄 Scanning {len(threads)} threads on this page")
+            
+            for thread in threads[:15]:  # Check 15 threads per page
                 thread_no = thread.get('no')
                 thread_url = f"https://a.4cdn.org/biz/thread/{thread_no}.json"
-                thread_response = requests.get(thread_url, headers=headers, timeout=10)
                 
-                if thread_response.status_code != 200:
-                    continue
+                try:
+                    thread_response = requests.get(thread_url, headers=headers, timeout=10)
                     
-                thread_data = thread_response.json()
-                posts = thread_data.get('posts', [])
-                
-                for post in posts[:20]:
-                    comment = post.get('com', '').lower()
-                    post_no = post.get('no')
-                    comment = re.sub('<[^<]+?>', '', comment)
-                    
-                    matches = [kw for kw in PAIN_KEYWORDS if kw in comment]
-                    
-                    if len(matches) >= 2:
-                        snippet = comment[:150]
-                        if len(comment) > 150:
-                            snippet += "..."
+                    if thread_response.status_code != 200:
+                        continue
                         
-                        found_leads.append({
-                            'post_no': post_no,
-                            'thread_no': thread_no,
-                            'comment': snippet,
-                            'url': f"https://boards.4channel.org/biz/thread/{thread_no}#p{post_no}",
-                            'pain_score': len(matches),
-                            'matches': ", ".join(matches[:3])
-                        })
+                    thread_data = thread_response.json()
+                    posts = thread_data.get('posts', [])
+                    
+                    # Check first 30 posts per thread
+                    for post in posts[:30]:
+                        comment = post.get('com', '')
+                        
+                        # Skip if no comment
+                        if not comment:
+                            continue
+                            
+                        post_no = post.get('no')
+                        
+                        # Remove HTML tags and convert to lowercase
+                        comment_clean = re.sub('<[^<]+?>', '', comment).lower()
+                        
+                        # Check for pain keywords
+                        matches = [kw for kw in PAIN_KEYWORDS if kw in comment_clean]
+                        
+                        # LOWERED THRESHOLD: Just 1 match now (was 2)
+                        if len(matches) >= 1:
+                            snippet = comment_clean[:200]
+                            if len(comment_clean) > 200:
+                                snippet += "..."
+                            
+                            found_leads.append({
+                                'post_no': post_no,
+                                'thread_no': thread_no,
+                                'comment': snippet,
+                                'url': f"https://boards.4channel.org/biz/thread/{thread_no}#p{post_no}",
+                                'pain_score': len(matches),
+                                'matches': ", ".join(matches[:5])
+                            })
+                except Exception as e:
+                    continue
                         
     except Exception as e:
         print(f"❌ Error scanning 4chan: {e}")
     
+    print(f"🔍 Found {len(found_leads)} total posts with pain keywords")
+    
+    # Sort by pain score
     found_leads.sort(key=lambda x: x['pain_score'], reverse=True)
     return found_leads
 
 def send_to_discord(leads):
     if not leads:
-        print("No new people in pain found.")
+        print("❌ No new people in pain found.")
         return
         
     description = "*REAL TRADERS on 4chan /biz/ struggling with crypto. Reply with value, then mention your server.*\n\n"
     
-    for lead in leads[:8]:
+    for lead in leads[:10]:  # Show top 10
         description += f"👤 **Anonymous** | Pain: {'🔴' * lead['pain_score']}\n"
         description += f"💬 > {lead['comment']}\n"
         description += f"🔗 [View Thread]({lead['url']}) | Keywords: `{lead['matches']}`\n\n"
@@ -113,6 +136,8 @@ if __name__ == "__main__":
     already_sent = load_sent_seeks()
     all_leads = scan_4chan_biz()
     new_leads = [l for l in all_leads if l['url'] not in already_sent]
+    
+    print(f"📊 Total leads: {len(all_leads)}, New leads: {len(new_leads)}")
     
     if new_leads:
         print(f"🎉 Found {len(new_leads)} NEW people in pain!")
