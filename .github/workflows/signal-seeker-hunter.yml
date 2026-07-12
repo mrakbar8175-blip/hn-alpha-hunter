@@ -2,14 +2,12 @@ name: Signal Seeker Hunter (Every 6 Hours)
 
 on:
   schedule:
-    # Runs every 6 hours to catch fresh posts
     - cron: '0 */6 * * *'
   workflow_dispatch:
 
 jobs:
   hunt-seekers:
     runs-on: ubuntu-latest
-    
     permissions:
       contents: write
     
@@ -36,9 +34,14 @@ jobs:
         run: |
           git config --global user.name 'GitHub Actions Bot'
           git config --global user.email 'actions@github.com'
-          git add sent_signal_seeks.json
-          if git commit -m "Update signal seeker state"; then
-            git push
+          # 👇 FIX: Only try to add the file if it actually exists
+          if [ -f sent_signal_seeks.json ]; then
+            git add sent_signal_seeks.json
+            if git commit -m "Update signal seeker state"; then
+              git push
+            else
+              echo "No changes to commit."
+            fi
           else
-            echo "No new seekers to save."
+            echo "No state file found yet."
           fi
