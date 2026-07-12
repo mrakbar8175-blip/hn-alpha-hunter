@@ -34,7 +34,6 @@ jobs:
         run: |
           git config --global user.name 'GitHub Actions Bot'
           git config --global user.email 'actions@github.com'
-          # 👇 FIX: Only try to add the file if it actually exists
           if [ -f sent_signal_seeks.json ]; then
             git add sent_signal_seeks.json
             if git commit -m "Update signal seeker state"; then
