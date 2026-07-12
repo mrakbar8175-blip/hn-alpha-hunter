@@ -8,19 +8,20 @@ import xml.etree.ElementTree as ET
 DISCORD_WEBHOOK_URL = os.getenv("SIGNAL_HUNTER_WEBHOOK", "PASTE_YOUR_WEBHOOK_HERE")
 STATE_FILE = "sent_signal_seeks.json"
 
-# Bitcointalk RSS Feeds (Public and Unblockable)
-# Board 5 = Speculation (Where people gamble and lose)
-# Board 6 = Altcoins (Where people get rug pulled)
+# Crypto News RSS Feeds (100% public and unblockable)
 RSS_FEEDS = [
-    "https://bitcointalk.org/index.php?type=rss;action=.xml;board=5.0",
-    "https://bitcointalk.org/index.php?type=rss;action=.xml;board=6.0"
+    "https://cointelegraph.com/rss",
+    "https://www.coindesk.com/arc/outboundfeeds/rss/",
+    "https://decrypt.co/feed"
 ]
 
-# Keywords that indicate someone is in pain or needs help
+# Keywords that indicate market pain, losses, or scams
 PAIN_KEYWORDS = [
-    "scam", "rug", "rugpull", "dev sold", "dumped", "fake", 
-    "honeypot", "stuck", "lost", "rekt", "help", "recovery",
-    "drained", "phishing", "hack", "stolen"
+    "scam", "rug pull", "rugpull", "dumped", "crash", "plunge",
+    "hack", "hacked", "exploit", "stolen", "lost", "fraud",
+    "liquidated", "bankrupt", "collapse", "ponzi", "exit scam",
+    "down 50%", "down 80%", "down 90%", "rekt", "bear market",
+    "sell-off", "selloff", "bloodbath", "capitulation"
 ]
 
 def load_sent_seeks():
@@ -33,19 +34,19 @@ def load_sent_seeks():
     return set()
 
 def save_sent_seeks(sent_set):
-    # ALWAYS save the file, even if empty, to prevent git errors
+    # ALWAYS save the file, even if empty
     recent_urls = list(sent_set)[-300:]
     with open(STATE_FILE, 'w') as f:
         json.dump(recent_urls, f)
 
 def clean_html(raw_html):
-    """Removes HTML tags from the RSS description."""
+    """Removes HTML tags from RSS content."""
     cleanr = re.compile('<.*?>')
     cleantext = re.sub(cleanr, '', raw_html)
     return cleantext
 
-def scan_bitcointalk():
-    print("🕵️‍♂️ Scanning Bitcointalk for traders in pain...")
+def scan_crypto_news():
+    print("🕵️‍♂️ Scanning crypto news for market pain and opportunities...")
     found_leads = []
     
     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) SignalHunter/1.0'}
@@ -59,7 +60,7 @@ def scan_bitcointalk():
             root = ET.fromstring(response.content)
             items = root.findall('.//item')
             
-            for item in items:
+            for item in items[:30]:  # Check last 30 articles per feed
                 title = item.find('title').text if item.find('title') is not None else ""
                 link = item.find('link').text if item.find('link') is not None else ""
                 desc_raw = item.find('description').text if item.find('description') is not None else ""
@@ -73,8 +74,8 @@ def scan_bitcointalk():
                 matches = [kw for kw in PAIN_KEYWORDS if kw in full_text]
                 
                 if len(matches) >= 1:
-                    snippet = desc[:150].strip()
-                    if len(desc) > 150:
+                    snippet = desc[:200].strip()
+                    if len(desc) > 200:
                         snippet += "..."
                         
                     found_leads.append({
@@ -82,35 +83,35 @@ def scan_bitcointalk():
                         'url': link,
                         'snippet': snippet,
                         'pain_score': len(matches),
-                        'matches': ", ".join(matches)
+                        'matches': ", ".join(matches[:3])  # Show top 3 matches
                     })
                     
         except Exception as e:
             print(f"⚠️ Error scanning feed {feed_url}: {e}")
             continue
             
-    # Sort by pain score (most desperate first)
+    # Sort by pain score (most dramatic events first)
     found_leads.sort(key=lambda x: x['pain_score'], reverse=True)
     return found_leads
 
 def send_to_discord(leads):
     if not leads:
-        print("No new leads found this cycle.")
+        print("No market pain detected this cycle.")
         return
         
-    description = "*Crypto traders in distress from Bitcointalk. High-intent leads for your signals.*\n\n"
+    description = "*Market pain = Opportunity. People are losing money and looking for help.*\n\n"
     
     for lead in leads[:5]:
         description += f"🚨 **[{lead['title']}]({lead['url']})**\n"
         description += f"📉 *Pain Score: {lead['pain_score']}* | Keywords: `{lead['matches']}`\n"
         description += f"> {lead['snippet']}\n\n"
         
-    description += "💡 *Strategy: Reply with empathy and a free tip, then drop your server link.*"
+    description += "💡 *Strategy: Share these news events in your server. When people panic, offer your signals as the solution.*"
     
     payload = {
         "username": "Signal Seeker Hunter",
         "embeds": [{
-            "title": "🔥 CRYPTO TRADERS IN PAIN - HOT LEADS 🔥",
+            "title": "🔥 CRYPTO MARKET PAIN DETECTED 🔥",
             "description": description,
             "color": 15105570
         }]
@@ -119,21 +120,21 @@ def send_to_discord(leads):
     try:
         response = requests.post(DISCORD_WEBHOOK_URL, json=payload, timeout=10)
         response.raise_for_status()
-        print("✅ Leads sent to Discord!")
+        print("✅ Market pain alerts sent to Discord!")
     except Exception as e:
         print(f"❌ Failed to send to Discord: {e}")
 
 if __name__ == "__main__":
     already_sent = load_sent_seeks()
-    all_leads = scan_bitcointalk()
+    all_leads = scan_crypto_news()
     new_leads = [l for l in all_leads if l['url'] not in already_sent]
     
     if new_leads:
-        print(f"🎉 Found {len(new_leads)} NEW leads!")
+        print(f"🎉 Found {len(new_leads)} NEW market pain events!")
         send_to_discord(new_leads)
         for l in new_leads:
             already_sent.add(l['url'])
     
-    # ALWAYS save state to prevent the "file not found" git error
+    # ALWAYS save state
     save_sent_seeks(already_sent)
     print("💾 State saved.")
