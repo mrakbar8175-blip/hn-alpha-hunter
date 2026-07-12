@@ -6,13 +6,17 @@ import re
 DISCORD_WEBHOOK_URL = os.getenv("SIGNAL_HUNTER_WEBHOOK", "PASTE_YOUR_WEBHOOK_HERE")
 STATE_FILE = "sent_signal_seeks.json"
 
-# Pain keywords
-PAIN_KEYWORDS = [
-    "lost money", "lost all", "got rekt", "rekt", "liquidated",
-    "need help", "help me", "struggling", "losing money", "down bad",
-    "scammed", "rug pull", "fake signals", "bad signals", "lost everything",
-    "broke", "don't know what to do", "confused", "selling everything",
-    "giving up", "quit trading", "worst trade", "huge loss"
+# Search for PAIN directly in HN comments
+PAIN_SEARCHES = [
+    "lost money",
+    "got rekt", 
+    "liquidated",
+    "scammed",
+    "bad signal",
+    "fake signal",
+    "lost everything",
+    "trading loss",
+    "crypto loss"
 ]
 
 def load_sent_seeks():
@@ -29,107 +33,62 @@ def save_sent_seeks(sent_set):
     with open(STATE_FILE, 'w') as f:
         json.dump(recent_urls, f)
 
-def scan_hackernews():
-    """Engine 1: 100% unblockable, high-quality crypto traders."""
-    print(" Engine 1: Scanning Hacker News for crypto pain...")
-    found_leads = []
-    
+def search_hn_for_pain(query):
+    """Search HN comments for a specific pain phrase."""
     url = "https://hn.algolia.com/api/v1/search"
     params = {
-        "query": "crypto OR bitcoin OR ethereum OR trading",
-        "tags": "comment", # We want comments where people complain
-        "hitsPerPage": 50,
-        "numericFilters": "points>0"
+        "query": query,
+        "tags": "comment",
+        "hitsPerPage": 30
     }
     
     try:
         response = requests.get(url, params=params, timeout=10)
         response.raise_for_status()
-        hits = response.json().get('hits', [])
+        return response.json().get('hits', [])
+    except Exception as e:
+        print(f"⚠️ Search failed for '{query}': {e}")
+        return []
+
+def scan_hackernews():
+    """Search HN for people in pain using multiple queries."""
+    print("🕵️‍♂️ Scanning Hacker News for traders in pain...")
+    found_leads = []
+    seen_ids = set()
+    
+    for pain_query in PAIN_SEARCHES:
+        print(f"  🔍 Searching: {pain_query}")
+        hits = search_hn_for_pain(pain_query)
         
         for hit in hits:
-            text = hit.get('comment_text', '').lower()
-            # Remove HTML tags from HN comments
-            text = re.sub('<[^<]+?>', '', text)
+            object_id = hit.get('objectID')
             
-            matches = [kw for kw in PAIN_KEYWORDS if kw in text]
+            # Skip duplicates
+            if object_id in seen_ids:
+                continue
+            seen_ids.add(object_id)
             
-            if len(matches) >= 1:
-                author = hit.get('author', 'Unknown')
-                story_title = hit.get('story_title', 'Unknown')
-                object_id = hit.get('objectID')
+            comment_text = hit.get('comment_text', '')
+            # Remove HTML tags
+            comment_clean = re.sub('<[^<]+?>', '', comment_text)
+            
+            author = hit.get('author', 'Unknown')
+            story_title = hit.get('story_title', 'Unknown')
+            
+            snippet = comment_clean[:200]
+            if len(comment_clean) > 200:
+                snippet += "..."
                 
-                snippet = text[:150]
-                if len(text) > 150:
-                    snippet += "..."
-                    
-                found_leads.append({
-                    'author': author,
-                    'platform': 'Hacker News',
-                    'title': f"Re: {story_title}",
-                    'snippet': snippet,
-                    'url': f"https://news.ycombinator.com/item?id={object_id}",
-                    'id': f"hn_{object_id}",
-                    'pain_score': len(matches),
-                    'matches': ", ".join(matches[:3])
-                })
-    except Exception as e:
-        print(f"⚠️ Engine 1 failed: {e}")
-        
-    return found_leads
-
-def scan_reddit_proxy():
-    """Engine 2: Reddit via reliable CORS proxy."""
-    print("🔍 Engine 2: Scanning Reddit via proxy...")
-    found_leads = []
+            found_leads.append({
+                'author': author,
+                'title': f"Re: {story_title}",
+                'snippet': snippet,
+                'url': f"https://news.ycombinator.com/item?id={object_id}",
+                'id': object_id,
+                'query': pain_query
+            })
     
-    subreddits = ['CryptoCurrency', 'Bitcoin', 'CryptoMarkets']
-    # Highly reliable proxy
-    proxy = "https://corsproxy.io/?"
-    
-    for sub in subreddits:
-        target_url = f"https://www.reddit.com/r/{sub}/new.json?limit=30"
-        
-        try:
-            response = requests.get(f"{proxy}{target_url}", timeout=15)
-            response.raise_for_status()
-            data = response.json()
-            posts = data.get('data', {}).get('children', [])
-            
-            for post in posts:
-                post_data = post.get('data', {})
-                if not post_data.get('selftext'):
-                    continue
-                    
-                title = post_data.get('title', '').lower()
-                text = post_data.get('selftext', '').lower()
-                full_text = f"{title} {text}"
-                
-                matches = [kw for kw in PAIN_KEYWORDS if kw in full_text]
-                
-                if len(matches) >= 2:
-                    author = post_data.get('author', 'Unknown')
-                    post_id = post_data.get('id', '')
-                    permalink = post_data.get('permalink', '')
-                    
-                    snippet = post_data.get('selftext', '')[:150]
-                    if len(post_data.get('selftext', '')) > 150:
-                        snippet += "..."
-                        
-                    found_leads.append({
-                        'author': author,
-                        'platform': 'Reddit',
-                        'title': post_data.get('title', ''),
-                        'snippet': snippet,
-                        'url': f"https://reddit.com{permalink}",
-                        'id': f"reddit_{post_id}",
-                        'pain_score': len(matches),
-                        'matches': ", ".join(matches[:3])
-                    })
-        except Exception as e:
-            print(f"⚠️ Engine 2 failed for r/{sub}: {e}")
-            continue
-            
+    print(f"📊 Found {len(found_leads)} total comments with pain")
     return found_leads
 
 def send_to_discord(leads):
@@ -137,21 +96,20 @@ def send_to_discord(leads):
         print("❌ No new people in pain found.")
         return
         
-    description = "*REAL PEOPLE struggling with crypto. Reply with value, then mention your server.*\n\n"
+    description = "*REAL PEOPLE on Hacker News struggling with crypto/trading. Reply with value, then mention your server.*\n\n"
     
-    for lead in leads[:8]:
-        platform_emoji = "🟠" if lead['platform'] == 'Hacker News' else ""
-        description += f"{platform_emoji} **{lead['author']}** ({lead['platform']}) | Pain: {'🔴' * lead['pain_score']}\n"
+    for lead in leads[:10]:
+        description += f"👤 **{lead['author']}**\n"
         description += f"📝 **{lead['title']}**\n"
         description += f"💬 > {lead['snippet']}\n"
-        description += f"🔗 [Reply Here]({lead['url']})\n\n"
+        description += f"🔗 [Reply Here]({lead['url']}) | Search: `{lead['query']}`\n\n"
         
     description += "💡 *Strategy: Reply with empathy + free tip, then softly mention your signal server.*"
     
     payload = {
         "username": "Signal Seeker Hunter",
         "embeds": [{
-            "title": "🔥 REAL TRADERS IN PAIN - GENUINE LEADS 🔥",
+            "title": "🔥 REAL TRADERS IN PAIN - HACKER NEWS 🔥",
             "description": description,
             "color": 15105570
         }]
@@ -166,16 +124,9 @@ def send_to_discord(leads):
 
 if __name__ == "__main__":
     already_sent = load_sent_seeks()
+    all_leads = scan_hackernews()
     
-    # Run both engines
-    hn_leads = scan_hackernews()
-    reddit_leads = scan_reddit_proxy()
-    
-    # Combine and sort
-    all_leads = hn_leads + reddit_leads
-    all_leads.sort(key=lambda x: x['pain_score'], reverse=True)
-    
-    # Filter duplicates
+    # Filter duplicates and already-sent
     new_leads = [l for l in all_leads if l['id'] not in already_sent]
     
     print(f"📊 Total found: {len(all_leads)}, New leads: {len(new_leads)}")
