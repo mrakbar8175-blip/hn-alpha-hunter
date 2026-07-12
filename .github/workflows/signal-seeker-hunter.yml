@@ -1,0 +1,44 @@
+name: Signal Seeker Hunter (Every 6 Hours)
+
+on:
+  schedule:
+    # Runs every 6 hours to catch fresh posts
+    - cron: '0 */6 * * *'
+  workflow_dispatch:
+
+jobs:
+  hunt-seekers:
+    runs-on: ubuntu-latest
+    
+    permissions:
+      contents: write
+    
+    steps:
+      - name: Checkout repository code
+        uses: actions/checkout@v3
+
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests
+
+      - name: Run the Signal Seeker Hunter
+        env:
+          SIGNAL_HUNTER_WEBHOOK: ${{ secrets.SIGNAL_HUNTER_WEBHOOK }}
+        run: python signal_seeker_hunter.py
+
+      - name: Commit and push state file
+        run: |
+          git config --global user.name 'GitHub Actions Bot'
+          git config --global user.email 'actions@github.com'
+          git add sent_signal_seeks.json
+          if git commit -m "Update signal seeker state"; then
+            git push
+          else
+            echo "No new seekers to save."
+          fi
