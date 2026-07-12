@@ -6,13 +6,13 @@ import re
 DISCORD_WEBHOOK_URL = os.getenv("SIGNAL_HUNTER_WEBHOOK", "PASTE_YOUR_WEBHOOK_HERE")
 STATE_FILE = "sent_signal_seeks.json"
 
-# More keywords, more common phrases
+# Pain keywords
 PAIN_KEYWORDS = [
-    "lost", "rekt", "liquidated", "help", "struggling", "losing", 
-    "scam", "rug", "fake", "broke", "confused", "giving up", 
-    "quit", "worst", "huge loss", "fuck", "done", "never",
-    "dumped", "crashed", "down", "bleeding", "stuck", "trapped",
-    "panic", "sell", "selling", "afraid", "scared", "worried"
+    "lost money", "lost all", "got rekt", "rekt", "liquidated",
+    "need help", "help me", "struggling", "losing money", "down bad",
+    "scammed", "rug pull", "fake signals", "bad signals", "lost everything",
+    "broke", "don't know what to do", "confused", "selling everything",
+    "giving up", "quit trading", "worst trade", "huge loss"
 ]
 
 def load_sent_seeks():
@@ -29,77 +29,107 @@ def save_sent_seeks(sent_set):
     with open(STATE_FILE, 'w') as f:
         json.dump(recent_urls, f)
 
-def scan_4chan_biz():
-    print("🕵️‍♂️ Scanning 4chan /biz/ for traders in pain...")
+def scan_hackernews():
+    """Engine 1: 100% unblockable, high-quality crypto traders."""
+    print(" Engine 1: Scanning Hacker News for crypto pain...")
     found_leads = []
     
-    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) SignalHunter/1.0'}
+    url = "https://hn.algolia.com/api/v1/search"
+    params = {
+        "query": "crypto OR bitcoin OR ethereum OR trading",
+        "tags": "comment", # We want comments where people complain
+        "hitsPerPage": 50,
+        "numericFilters": "points>0"
+    }
     
     try:
-        response = requests.get("https://a.4cdn.org/biz/threads.json", headers=headers, timeout=10)
+        response = requests.get(url, params=params, timeout=10)
         response.raise_for_status()
-        threads_data = response.json()
+        hits = response.json().get('hits', [])
         
-        print(f"📊 Found {len(threads_data)} pages of threads")
-        
-        # Scan first 3 pages (more threads)
-        for page in threads_data[:3]:
-            threads = page.get('threads', [])
-            print(f"📄 Scanning {len(threads)} threads on this page")
+        for hit in hits:
+            text = hit.get('comment_text', '').lower()
+            # Remove HTML tags from HN comments
+            text = re.sub('<[^<]+?>', '', text)
             
-            for thread in threads[:15]:  # Check 15 threads per page
-                thread_no = thread.get('no')
-                thread_url = f"https://a.4cdn.org/biz/thread/{thread_no}.json"
+            matches = [kw for kw in PAIN_KEYWORDS if kw in text]
+            
+            if len(matches) >= 1:
+                author = hit.get('author', 'Unknown')
+                story_title = hit.get('story_title', 'Unknown')
+                object_id = hit.get('objectID')
                 
-                try:
-                    thread_response = requests.get(thread_url, headers=headers, timeout=10)
+                snippet = text[:150]
+                if len(text) > 150:
+                    snippet += "..."
                     
-                    if thread_response.status_code != 200:
-                        continue
-                        
-                    thread_data = thread_response.json()
-                    posts = thread_data.get('posts', [])
-                    
-                    # Check first 30 posts per thread
-                    for post in posts[:30]:
-                        comment = post.get('com', '')
-                        
-                        # Skip if no comment
-                        if not comment:
-                            continue
-                            
-                        post_no = post.get('no')
-                        
-                        # Remove HTML tags and convert to lowercase
-                        comment_clean = re.sub('<[^<]+?>', '', comment).lower()
-                        
-                        # Check for pain keywords
-                        matches = [kw for kw in PAIN_KEYWORDS if kw in comment_clean]
-                        
-                        # LOWERED THRESHOLD: Just 1 match now (was 2)
-                        if len(matches) >= 1:
-                            snippet = comment_clean[:200]
-                            if len(comment_clean) > 200:
-                                snippet += "..."
-                            
-                            found_leads.append({
-                                'post_no': post_no,
-                                'thread_no': thread_no,
-                                'comment': snippet,
-                                'url': f"https://boards.4channel.org/biz/thread/{thread_no}#p{post_no}",
-                                'pain_score': len(matches),
-                                'matches': ", ".join(matches[:5])
-                            })
-                except Exception as e:
-                    continue
-                        
+                found_leads.append({
+                    'author': author,
+                    'platform': 'Hacker News',
+                    'title': f"Re: {story_title}",
+                    'snippet': snippet,
+                    'url': f"https://news.ycombinator.com/item?id={object_id}",
+                    'id': f"hn_{object_id}",
+                    'pain_score': len(matches),
+                    'matches': ", ".join(matches[:3])
+                })
     except Exception as e:
-        print(f"❌ Error scanning 4chan: {e}")
+        print(f"⚠️ Engine 1 failed: {e}")
+        
+    return found_leads
+
+def scan_reddit_proxy():
+    """Engine 2: Reddit via reliable CORS proxy."""
+    print("🔍 Engine 2: Scanning Reddit via proxy...")
+    found_leads = []
     
-    print(f"🔍 Found {len(found_leads)} total posts with pain keywords")
+    subreddits = ['CryptoCurrency', 'Bitcoin', 'CryptoMarkets']
+    # Highly reliable proxy
+    proxy = "https://corsproxy.io/?"
     
-    # Sort by pain score
-    found_leads.sort(key=lambda x: x['pain_score'], reverse=True)
+    for sub in subreddits:
+        target_url = f"https://www.reddit.com/r/{sub}/new.json?limit=30"
+        
+        try:
+            response = requests.get(f"{proxy}{target_url}", timeout=15)
+            response.raise_for_status()
+            data = response.json()
+            posts = data.get('data', {}).get('children', [])
+            
+            for post in posts:
+                post_data = post.get('data', {})
+                if not post_data.get('selftext'):
+                    continue
+                    
+                title = post_data.get('title', '').lower()
+                text = post_data.get('selftext', '').lower()
+                full_text = f"{title} {text}"
+                
+                matches = [kw for kw in PAIN_KEYWORDS if kw in full_text]
+                
+                if len(matches) >= 2:
+                    author = post_data.get('author', 'Unknown')
+                    post_id = post_data.get('id', '')
+                    permalink = post_data.get('permalink', '')
+                    
+                    snippet = post_data.get('selftext', '')[:150]
+                    if len(post_data.get('selftext', '')) > 150:
+                        snippet += "..."
+                        
+                    found_leads.append({
+                        'author': author,
+                        'platform': 'Reddit',
+                        'title': post_data.get('title', ''),
+                        'snippet': snippet,
+                        'url': f"https://reddit.com{permalink}",
+                        'id': f"reddit_{post_id}",
+                        'pain_score': len(matches),
+                        'matches': ", ".join(matches[:3])
+                    })
+        except Exception as e:
+            print(f"⚠️ Engine 2 failed for r/{sub}: {e}")
+            continue
+            
     return found_leads
 
 def send_to_discord(leads):
@@ -107,19 +137,21 @@ def send_to_discord(leads):
         print("❌ No new people in pain found.")
         return
         
-    description = "*REAL TRADERS on 4chan /biz/ struggling with crypto. Reply with value, then mention your server.*\n\n"
+    description = "*REAL PEOPLE struggling with crypto. Reply with value, then mention your server.*\n\n"
     
-    for lead in leads[:10]:  # Show top 10
-        description += f"👤 **Anonymous** | Pain: {'🔴' * lead['pain_score']}\n"
-        description += f"💬 > {lead['comment']}\n"
-        description += f"🔗 [View Thread]({lead['url']}) | Keywords: `{lead['matches']}`\n\n"
+    for lead in leads[:8]:
+        platform_emoji = "🟠" if lead['platform'] == 'Hacker News' else ""
+        description += f"{platform_emoji} **{lead['author']}** ({lead['platform']}) | Pain: {'🔴' * lead['pain_score']}\n"
+        description += f"📝 **{lead['title']}**\n"
+        description += f"💬 > {lead['snippet']}\n"
+        description += f"🔗 [Reply Here]({lead['url']})\n\n"
         
     description += "💡 *Strategy: Reply with empathy + free tip, then softly mention your signal server.*"
     
     payload = {
         "username": "Signal Seeker Hunter",
         "embeds": [{
-            "title": "🔥 REAL TRADERS IN PAIN - 4CHAN /BIZ/ 🔥",
+            "title": "🔥 REAL TRADERS IN PAIN - GENUINE LEADS 🔥",
             "description": description,
             "color": 15105570
         }]
@@ -134,16 +166,25 @@ def send_to_discord(leads):
 
 if __name__ == "__main__":
     already_sent = load_sent_seeks()
-    all_leads = scan_4chan_biz()
-    new_leads = [l for l in all_leads if l['url'] not in already_sent]
     
-    print(f"📊 Total leads: {len(all_leads)}, New leads: {len(new_leads)}")
+    # Run both engines
+    hn_leads = scan_hackernews()
+    reddit_leads = scan_reddit_proxy()
+    
+    # Combine and sort
+    all_leads = hn_leads + reddit_leads
+    all_leads.sort(key=lambda x: x['pain_score'], reverse=True)
+    
+    # Filter duplicates
+    new_leads = [l for l in all_leads if l['id'] not in already_sent]
+    
+    print(f"📊 Total found: {len(all_leads)}, New leads: {len(new_leads)}")
     
     if new_leads:
         print(f"🎉 Found {len(new_leads)} NEW people in pain!")
         send_to_discord(new_leads)
         for l in new_leads:
-            already_sent.add(l['url'])
+            already_sent.add(l['id'])
     
     save_sent_seeks(already_sent)
     print("💾 State saved.")
