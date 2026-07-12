@@ -148,7 +148,8 @@ if __name__ == "__main__":
         # 4. Save to memory
         for s in new_seeks:
             already_sent.add(s['url'])
-        save_sent_seeks(already_sent)
-        print("💾 Saved state to prevent duplicates.")
-    else:
+    
+    # 👇 ALWAYS save the state file, even if no new seekers found
+    save_sent_seeks(already_sent)
+    print("💾 Saved state.")
         print("No new seekers found (already tracking recent posts).")
