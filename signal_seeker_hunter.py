@@ -3,23 +3,16 @@ import os
 import json
 import re
 
-# --- CONFIGURATION ---
 DISCORD_WEBHOOK_URL = os.getenv("SIGNAL_HUNTER_WEBHOOK", "PASTE_YOUR_WEBHOOK_HERE")
 STATE_FILE = "sent_signal_seeks.json"
 
-# The best crypto subreddits where people complain
-SUBREDDITS = ['CryptoCurrency', 'Bitcoin', 'CryptoMarkets', 'altcoin']
-
-# The Free Proxy to bypass GitHub Actions IP block
-PROXY_URL = "https://api.allorigins.win/raw?url="
-
-# Pain keywords
 PAIN_KEYWORDS = [
     "lost money", "lost all", "got rekt", "rekt", "liquidated",
     "need help", "help me", "struggling", "losing money", "down bad",
     "scammed", "rug pull", "fake signals", "bad signals", "lost everything",
     "broke", "don't know what to do", "confused", "selling everything",
-    "giving up", "quit trading", "worst trade", "huge loss"
+    "giving up", "quit trading", "worst trade", "huge loss", "fuck me",
+    "fuck this", "done trading", "never again"
 ]
 
 def load_sent_seeks():
@@ -36,62 +29,53 @@ def save_sent_seeks(sent_set):
     with open(STATE_FILE, 'w') as f:
         json.dump(recent_urls, f)
 
-def scan_reddit():
-    print("🕵️‍♂️ Hunting for traders in pain on Reddit...")
+def scan_4chan_biz():
+    print("🕵️‍♂️ Scanning 4chan /biz/ for traders in pain...")
     found_leads = []
     
-    for sub in SUBREDDITS:
-        # We wrap the Reddit URL in the free proxy to bypass the 403 block
-        target_url = f"https://www.reddit.com/r/{sub}/new.json?limit=50"
-        proxy_request_url = f"{PROXY_URL}{target_url}"
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) SignalHunter/1.0'}
+    
+    try:
+        response = requests.get("https://a.4cdn.org/biz/threads.json", headers=headers, timeout=10)
+        response.raise_for_status()
+        threads_data = response.json()
         
-        try:
-            # No special headers needed, the proxy handles it
-            response = requests.get(proxy_request_url, timeout=15)
-            response.raise_for_status()
-            
-            data = response.json()
-            posts = data.get('data', {}).get('children', [])
-            
-            for post in posts:
-                post_data = post.get('data', {})
+        for page in threads_data[:2]:
+            for thread in page.get('threads', [])[:10]:
+                thread_no = thread.get('no')
+                thread_url = f"https://a.4cdn.org/biz/thread/{thread_no}.json"
+                thread_response = requests.get(thread_url, headers=headers, timeout=10)
                 
-                # Skip if it's not a text post or has no text
-                if not post_data.get('selftext'):
+                if thread_response.status_code != 200:
                     continue
                     
-                title = post_data.get('title', '').lower()
-                text = post_data.get('selftext', '').lower()
-                full_text = f"{title} {text}"
+                thread_data = thread_response.json()
+                posts = thread_data.get('posts', [])
                 
-                # Check for pain keywords
-                matches = [kw for kw in PAIN_KEYWORDS if kw in full_text]
-                
-                # Only flag if they have at least 2 pain indicators
-                if len(matches) >= 2:
-                    author = post_data.get('author', 'Unknown')
-                    permalink = post_data.get('permalink', '')
-                    post_id = post_data.get('id', '')
+                for post in posts[:20]:
+                    comment = post.get('com', '').lower()
+                    post_no = post.get('no')
+                    comment = re.sub('<[^<]+?>', '', comment)
                     
-                    snippet = post_data.get('selftext', '')[:150]
-                    if len(post_data.get('selftext', '')) > 150:
-                        snippet += "..."
+                    matches = [kw for kw in PAIN_KEYWORDS if kw in comment]
+                    
+                    if len(matches) >= 2:
+                        snippet = comment[:150]
+                        if len(comment) > 150:
+                            snippet += "..."
                         
-                    found_leads.append({
-                        'author': author,
-                        'title': post_data.get('title', ''),
-                        'snippet': snippet,
-                        'url': f"https://reddit.com{permalink}",
-                        'post_id': post_id,
-                        'pain_score': len(matches),
-                        'matches': ", ".join(matches[:3])
-                    })
-                    
-        except Exception as e:
-            print(f"️ Error scanning r/{sub}: {e}")
-            continue
-            
-    # Sort by pain score (most desperate first)
+                        found_leads.append({
+                            'post_no': post_no,
+                            'thread_no': thread_no,
+                            'comment': snippet,
+                            'url': f"https://boards.4channel.org/biz/thread/{thread_no}#p{post_no}",
+                            'pain_score': len(matches),
+                            'matches': ", ".join(matches[:3])
+                        })
+                        
+    except Exception as e:
+        print(f"❌ Error scanning 4chan: {e}")
+    
     found_leads.sort(key=lambda x: x['pain_score'], reverse=True)
     return found_leads
 
@@ -100,20 +84,19 @@ def send_to_discord(leads):
         print("No new people in pain found.")
         return
         
-    description = "*REAL PEOPLE on Reddit struggling with crypto. Reply with value, then mention your server.*\n\n"
+    description = "*REAL TRADERS on 4chan /biz/ struggling with crypto. Reply with value, then mention your server.*\n\n"
     
     for lead in leads[:8]:
-        description += f"👤 **u/{lead['author']}** | Pain: {'🔴' * lead['pain_score']}\n"
-        description += f"📝 **{lead['title']}**\n"
-        description += f"💬 > {lead['snippet']}\n"
-        description += f"🔗 [Reply Here]({lead['url']}) | Keywords: `{lead['matches']}`\n\n"
+        description += f"👤 **Anonymous** | Pain: {'🔴' * lead['pain_score']}\n"
+        description += f"💬 > {lead['comment']}\n"
+        description += f"🔗 [View Thread]({lead['url']}) | Keywords: `{lead['matches']}`\n\n"
         
     description += "💡 *Strategy: Reply with empathy + free tip, then softly mention your signal server.*"
     
     payload = {
         "username": "Signal Seeker Hunter",
         "embeds": [{
-            "title": "🔥 REAL TRADERS IN PAIN - REDDIT LEADS 🔥",
+            "title": "🔥 REAL TRADERS IN PAIN - 4CHAN /BIZ/ 🔥",
             "description": description,
             "color": 15105570
         }]
@@ -128,17 +111,14 @@ def send_to_discord(leads):
 
 if __name__ == "__main__":
     already_sent = load_sent_seeks()
-    all_leads = scan_reddit()
-    
-    # Filter out duplicates using the post ID
-    new_leads = [l for l in all_leads if l['post_id'] not in already_sent]
+    all_leads = scan_4chan_biz()
+    new_leads = [l for l in all_leads if l['url'] not in already_sent]
     
     if new_leads:
         print(f"🎉 Found {len(new_leads)} NEW people in pain!")
         send_to_discord(new_leads)
         for l in new_leads:
-            already_sent.add(l['post_id'])
+            already_sent.add(l['url'])
     
-    # ALWAYS save state
     save_sent_seeks(already_sent)
     print("💾 State saved.")
